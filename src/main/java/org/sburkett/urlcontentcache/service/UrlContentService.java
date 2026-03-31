@@ -1,6 +1,7 @@
 package org.sburkett.urlcontentcache.service;
 
 import java.io.ByteArrayOutputStream;
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
@@ -54,20 +55,29 @@ public class UrlContentService {
         connection.setConnectTimeout(10000);
         connection.setReadTimeout(10000);
 
-        try (InputStream inputStream = connection.getInputStream()) {
-            return new String(readAllBytes(inputStream), StandardCharsets.UTF_8);
+        int initialCapacity = determineInitialCapacity(connection.getContentLengthLong());
+        try (InputStream inputStream = new BufferedInputStream(connection.getInputStream())) {
+            return new String(readAllBytes(inputStream, initialCapacity), StandardCharsets.UTF_8);
         }
     }
 
-    private byte[] readAllBytes(InputStream inputStream) throws IOException {
+    private byte[] readAllBytes(InputStream inputStream, int initialCapacity) throws IOException {
         byte[] buffer = new byte[4096];
         int bytesRead;
 
-        try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+        try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream(initialCapacity)) {
             while ((bytesRead = inputStream.read(buffer)) != -1) {
                 outputStream.write(buffer, 0, bytesRead);
             }
             return outputStream.toByteArray();
         }
+    }
+
+    private int determineInitialCapacity(long contentLength) {
+        if (contentLength <= 0 || contentLength > Integer.MAX_VALUE) {
+            return 8192;
+        }
+
+        return (int) contentLength;
     }
 }

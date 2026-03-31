@@ -1,12 +1,15 @@
 package org.sburkett.urlcontentcache.service;
 
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.util.Base64;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.logging.Logger;
 import org.sburkett.urlcontentcache.model.CachedPage;
 
@@ -21,11 +24,10 @@ public class CacheService {
 
     public CacheService(Path cacheDirectory) {
         this.cacheDirectory = cacheDirectory;
+        ensureCacheDirectoryExists();
     }
 
     public CachedPage find(String url) throws IOException {
-        Files.createDirectories(cacheDirectory);
-
         Path cacheFilePath = getCachedFilePath(url);
         LOGGER.info("Checking cache for URL: " + url);
 
@@ -41,61 +43,82 @@ public class CacheService {
      * Saves a URL's original fetch timestamp, url, and content to a file
      */
     public void save(CachedPage cachedPage) throws IOException {
-        Files.createDirectories(cacheDirectory);
-
         Path cacheFilePath = getCachedFilePath(cachedPage.getUrl());
-        StringBuilder cacheFileContents = new StringBuilder();
 
-        cacheFileContents.append("fetchedAt=")
-                .append(cachedPage.getFetchedAt())
-                .append(System.lineSeparator());
+        try (BufferedWriter writer = Files.newBufferedWriter(cacheFilePath, StandardCharsets.UTF_8)) {
 
-        cacheFileContents.append("url=")
-                .append(cachedPage.getUrl())
-                .append(System.lineSeparator());
+            // write fetch date
+            writer.write("fetchedAt=");
+            writer.write(cachedPage.getFetchedAt().toString());
+            writer.newLine();
 
-        cacheFileContents.append(System.lineSeparator());
-        cacheFileContents.append(cachedPage.getContent());
+            // write url
+            writer.write("url=");
+            writer.write(cachedPage.getUrl());
+            writer.newLine();
+            writer.newLine();
 
-        Files.write(cacheFilePath, cacheFileContents.toString().getBytes(StandardCharsets.UTF_8));
+            // write the content
+            writer.write(cachedPage.getContent());
+        }
+
         LOGGER.info("Saved fetched content to cache file: " + cacheFilePath.toAbsolutePath());
     }
 
     private CachedPage readFromCache(Path cacheFilePath) throws IOException {
-        List<String> lines = Files.readAllLines(cacheFilePath, StandardCharsets.UTF_8);
-        int contentStartIndex = findContentStartIndex(lines);
-        String url = readMetadataValue(lines, "url", contentStartIndex);
-        String fetchedAtValue = readMetadataValue(lines, "fetchedAt", contentStartIndex);
+        try (BufferedReader reader = Files.newBufferedReader(cacheFilePath, StandardCharsets.UTF_8)) {
+            Map<String, String> metadata = readMetadata(reader);
+            String url = metadata.get("url");
+            String fetchedAtValue = metadata.get("fetchedAt");
 
-        if (url == null || fetchedAtValue == null) {
-            throw new IOException("Cache file is missing required metadata: " + cacheFilePath.toAbsolutePath());
+            if (url == null || fetchedAtValue == null) {
+                throw new IOException("Cache file is missing required metadata: " + cacheFilePath.toAbsolutePath());
+            }
+
+            return new CachedPage(url, Instant.parse(fetchedAtValue), readRemainingContent(reader));
         }
-
-        String content = String.join(System.lineSeparator(), lines.subList(contentStartIndex, lines.size()));
-        return new CachedPage(url, Instant.parse(fetchedAtValue), content);
     }
 
-    private int findContentStartIndex(List<String> lines) {
-        for (int i = 0; i < lines.size(); i++) {
-            if (lines.get(i).trim().isEmpty()) {
-                return i + 1;
+    private Map<String, String> readMetadata(BufferedReader reader) throws IOException {
+        Map<String, String> metadata = new HashMap<>();
+        String line;
+
+        while ((line = reader.readLine()) != null) {
+            if (line.isEmpty()) {
+                break;
             }
+
+            int separatorIndex = line.indexOf('=');
+            if (separatorIndex <= 0) {
+                continue;
+            }
+
+            String key = line.substring(0, separatorIndex);
+            String value = line.substring(separatorIndex + 1);
+            metadata.put(key, value);
         }
 
-        return lines.size();
+        return metadata;
     }
 
-    private String readMetadataValue(List<String> lines, String key, int metadataEndIndex) {
-        String prefix = key + "=";
+    private String readRemainingContent(BufferedReader reader) throws IOException {
+        char[] buffer = new char[8192];
+        int charactersRead;
+        StringBuilder content = new StringBuilder();
 
-        for (int i = 0; i < metadataEndIndex; i++) {
-            String line = lines.get(i);
-            if (line.startsWith(prefix)) {
-                return line.substring(prefix.length());
-            }
+        while ((charactersRead = reader.read(buffer)) != -1) {
+            content.append(buffer, 0, charactersRead);
         }
 
-        return null;
+        return content.toString();
+    }
+
+    private void ensureCacheDirectoryExists() {
+        try {
+            Files.createDirectories(cacheDirectory);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to create cache directory: " + cacheDirectory.toAbsolutePath(), exception);
+        }
     }
 
     private Path getCachedFilePath(String url) {
